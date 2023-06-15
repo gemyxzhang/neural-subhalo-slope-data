@@ -30,7 +30,7 @@ To train a likelihood-ratio estimator on the mock images, run the following scri
 
 ### Inference 
 To obtain the likelihood ratios for estimating the calibration distributions, the following script will produce two sets of likelihood ratios that can be used for KDE: 
-- [make_calibration_distributions.py](make_calibration_distributions.py)
+- [make_calibration_distributions.py](make_calibration_distributions.py) (which has dependecy on [inference_utils.py](inference_utils.py))
 
 The HST images used in our analysis are taken from 
 - [https://mast.stsci.edu/portal/Mashup/Clients/Mast/Portal.html](https://mast.stsci.edu/portal/Mashup/Clients/Mast/Portal.html)

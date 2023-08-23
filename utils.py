@@ -7,6 +7,7 @@ from astropy.cosmology import default_cosmology
 from lenstronomy.Cosmo.background import Background 
 from lenstronomy.LensModel.Profiles.spp import SPP
 from lenstronomy.LensModel.Profiles.sie import SIE
+from lenstronomy.LensModel.Profiles.splcore import SPLCORE
 from lenstronomy.LensModel.Profiles.coreBurkert import CoreBurkert
 from lenstronomy.Cosmo.lens_cosmo import LensCosmo
 import lenstronomy.Util.param_util as param_util
@@ -26,9 +27,11 @@ from lenstronomy.SimulationAPI.observation_api import SingleBand
 from lenstronomy.SimulationAPI.data_api import DataAPI
 
 from scipy.stats import norm, truncnorm, uniform
+from scipy.special import hyp2f1
 
 from paltas.Substructure import nfw_functions  
-from paltas.Substructure.los_dg19 import LOSDG19 
+from paltas.Substructure.los_dg19 import LOSDG19
+from paltas.Substructure.subhalos_dg19 import SubhalosDG19
 from paltas.Utils import cosmology_utils
 
 
@@ -58,6 +61,33 @@ def epl_m2thetae(m200, gamma, rho_c, s_crit):
     
     return SPP.rho2theta(rho0, gamma)
 
+def splcore_m2sigma0(m200, gamma, rho_c, s_crit, r_core): 
+    # rho_c should have arcsec not mpc 
+    r = np.power(3*m200/(4*np.pi)/(200*rho_c), 1/3)  # in arcsec 
+    rho0 = m200/(4 * np.pi * r_core ** 3 * _g(r/r_core, gamma))  # in Msun/arcsec^3 
+    
+    return SPLCORE._rho02sigma(rho0, r_core)/s_crit
+
+
+def _g(x, gamma):
+    """
+    Returns the solution of the 3D mass integral defined such that
+    Returns the solution of the 2D mass integral defined such that
+
+    .. math::
+        m_{\\rm{3D}}\\left(R\\right) = 4 \\pi r_{\\rm{core}}^3
+        \\rho_0 G\\left(\\frac{R}{r_{\\rm{core}}}, \\gamma\\right)
+
+    :param x: dimensionless radius r/r_core
+    :param gamma: logarithmic slope at r -> infinity
+    :return: a number
+    """
+
+    prefactor = 1 / ((gamma - 3) * (gamma - 1)) / x
+    term = hyp2f1(-0.5, gamma / 2, 0.5, -x ** 2) - (1 + x ** 2) ** ((2 - gamma) / 2) * (
+                1 + x ** 2 * (gamma - 1))
+    return prefactor * term
+        
 
 def epl_m200(theta_E, gamma, z_lens, z_source, cosmo): 
     lensCosmo = LensCosmo(z_lens=z_lens, z_source=z_source, cosmo=cosmo)
@@ -128,7 +158,6 @@ def mass_to_concentration(m, dex, z=0.5):
     return 10**(a + b*np.log10(m/(10**12/0.7)) + np.random.randn(len(m))*dex) 
 
 
-
 # modified class of los halos based on a base class in paltas 
 class LOSDG19_epl(LOSDG19):
     def __init__(self,gamma,gamma_width,los_parameters,main_deflector_parameters,source_parameters,cosmology_parameters):
@@ -136,8 +165,8 @@ class LOSDG19_epl(LOSDG19):
         super().__init__(los_parameters,main_deflector_parameters,source_parameters,cosmology_parameters)
         self.gamma = gamma
         self.gamma_width = gamma_width
-        
-    def convert_to_lenstronomy_epl(self, z, z_masses, z_cart_pos): 
+    
+    def convert_to_lenstronomy_epl(self, z, z_masses, z_cart_pos, los_type='EPL'): 
         """Converts the subhalo masses and position to EPL profiles
         for lenstronomy
         Args:
@@ -166,16 +195,34 @@ class LOSDG19_epl(LOSDG19):
         gammas = truncnorm.rvs((1.01-g_loc)/g_scale, (2.99-g_loc)/g_scale, loc=g_loc, scale=g_scale, size=nsub)
         e1s, e2s = np.random.uniform(-0.2, 0.2, (2, nsub)) 
         
-        thetaes_los = epl_m2thetae(z_masses, gammas, rho_c, Si_crit)
 
         # Populate the parameters for each lens
-        model_list = []
+        model_list = [los_type]*len(z_masses)
         kwargs_list = []
-
-        for i in range(len(z_masses)):
-            model_list.append('EPL')
-            kwargs_list.append({'theta_E':thetaes_los[i], 'gamma':gammas[i],
-                                'e1':e1s[i], 'e2':e2s[i],'center_x':cart_pos_ang[i,0],'center_y':cart_pos_ang[i,1]})
+            
+        if los_type == 'EPL': 
+            thetaes_los = epl_m2thetae(z_masses, gammas, rho_c, Si_crit)
+            
+            for i in range(len(z_masses)):
+                kwargs_list.append({'theta_E':thetaes_los[i], 'gamma':gammas[i],
+                                    'e1':e1s[i], 'e2':e2s[i],'center_x':cart_pos_ang[i,0],'center_y':cart_pos_ang[i,1]})
+        
+        elif los_type == 'SPEMD': 
+            thetaes_los = epl_m2thetae(z_masses, gammas, rho_c, Si_crit)
+            s_scales = np.random.uniform(0.1, 0.3, nsub)
+            
+            for i in range(len(z_masses)):
+                kwargs_list.append({'theta_E':thetaes_los[i], 'gamma':gammas[i],
+                                    'e1':e1s[i], 'e2':e2s[i], 's_scale': s_scales[i], 
+                                    'center_x':cart_pos_ang[i,0],'center_y':cart_pos_ang[i,1]})
+                
+        elif los_type == 'SPL_CORE': 
+            r_cores = np.random.uniform(0.01, 0.05, nsub) 
+            sigma0s = splcore_m2sigma0(z_masses, gammas, rho_c, Si_crit, r_cores)
+            
+            for i in range(len(z_masses)):
+                kwargs_list.append({'sigma0':sigma0s[i],'center_x':cart_pos_ang[i,0],
+                                    'center_y':cart_pos_ang[i,1], 'r_core': r_cores[i], 'gamma':gammas[i]})
         
         return (model_list,kwargs_list)
 
@@ -210,11 +257,10 @@ class LOSDG19_epl(LOSDG19):
         cart_pos_ang = z_cart_pos / np.expand_dims(kpc_per_arcsecond,-1)
 
         # Populate the parameters for each lens
-        model_list = []
+        model_list = ['NFW']*len(z_masses)
         kwargs_list = []
 
         for i in range(len(z_masses)):
-            model_list.append('NFW')
             kwargs_list.append({'alpha_Rs':alpha_Rs[i], 'Rs':z_r_scale_ang[i],
                                 'center_x':cart_pos_ang[i,0],'center_y':cart_pos_ang[i,1]})
 
@@ -244,7 +290,7 @@ class LOSDG19_epl(LOSDG19):
         return ['CONVERGENCE'], [{'kappa': -mass_sheet}] 
     
         
-    def draw_los_epl(self, numPix, deltapix): 
+    def draw_los_epl(self, numPix, deltapix, los_type='EPL'): 
         """Draws masses, concentrations,and positions for the los substructure 
         of a main lens halo.
         Returns:
@@ -288,7 +334,7 @@ class LOSDG19_epl(LOSDG19):
             z_cart_pos = self.sample_los_pos(z,len(z_masses))
             # Convert the mass and positions to lenstronomy models
             # and kwargs and append to our lists.
-            model_list, kwargs_list = self.convert_to_lenstronomy_epl(z,z_masses,z_cart_pos)
+            model_list, kwargs_list = self.convert_to_lenstronomy_epl(z,z_masses,z_cart_pos,los_type=los_type)
             nms_list, kwargs_nms = self.negative_mass_sheet(numPix, deltapix, model_list, kwargs_list)
             
             los_model_list += model_list
@@ -388,7 +434,9 @@ def make_image(cosmo,
                multipole=False, # add multipole moments 
                sourceargs=None,   # includes source_model_list, kwargs_source matching lenstronomy 
                lensargs=None,     # kwargs matching lenstronomy; lenargs need to match main_lens_type 
-               losargs=None):  
+               losargs=None,
+               shargs=None, 
+               psf=None):  
     
     side_length = numPix * deltapix   # side length in arcsec 
     # we set up a grid in coordinates and evaluate basic lensing quantities on it
@@ -407,6 +455,12 @@ def make_image(cosmo,
         keys = ['Rs', 'alpha_Rs', 'center_x', 'center_y'] 
     elif (subhalo_type == 'coreBURKERT'): 
         keys = ['Rs', 'alpha_Rs', 'r_core', 'center_x', 'center_y']
+    elif (subhalo_type == 'SPEMD'): 
+        keys = ['theta_E', 'gamma', 'e1', 'e2', 's_scale', 'center_x', 'center_y']
+    elif (subhalo_type == 'SPL_CORE'): 
+        keys = ['sigma0', 'center_x', 'center_y', 'r_core', 'gamma']
+    elif (subhalo_type == 'TNFW'): 
+        keys = ['Rs', 'alpha_Rs', 'r_trunc', 'center_x', 'center_y']
     
     kwargs_source = []
     source_model_list = []
@@ -497,25 +551,18 @@ def make_image(cosmo,
                      'center_y': kwargs_lens_main['center_y']}]
         lens_model_list += ['MULTIPOLE']*2
         kwargs_lens_list += kwargs_mp
-        
-    '''
-    kwargs_model_mainlens = {'lens_model_list': lens_model_list,  # list of lens models to be used
-                    'source_light_model_list': source_model_list,  # list of extended source models to be used
-                    'z_lens': z_lens,
-                    'z_source': z_source,
-                    'cosmo': cosmo
-                    }
 
-    '''
-    
-    kwargs_psf = {'psf_type': 'GAUSSIAN',  # type of PSF model (supports 'GAUSSIAN' and 'PIXEL')
-              'fwhm': 1.8*deltapix,  # full width at half maximum of the Gaussian PSF (in angular units)
-              'pixel_size': deltapix  # angular scale of a pixel (required for a Gaussian PSF to translate the FWHM into a pixel scale)
-             }
+    if psf is None: 
+        kwargs_psf = {'psf_type': 'GAUSSIAN',  # type of PSF model (supports 'GAUSSIAN' and 'PIXEL')
+                  'fwhm': 1.8*deltapix,  # full width at half maximum of the Gaussian PSF (in angular units)
+                  'pixel_size': deltapix  # angular scale of a pixel (required for a Gaussian PSF to translate the FWHM into a pixel scale)
+                 }
+    else: 
+        kwargs_psf = psf 
+        
     psf_class = PSF(**kwargs_psf)
     
     # ACSF814W 
-    # https://hst-docs.stsci.edu/wfc3ihb/chapter-6-uvis-imaging-with-wfc3/6-6-uvis-optical-performance
     kwargs_detector = {'pixel_scale':deltapix,'ccd_gain':1.58,'read_noise':3.0,
     'magnitude_zero_point':25.127, 'exposure_time':noise,'sky_brightness':21.83,
     'num_exposures':1,'background_noise':None
@@ -532,21 +579,7 @@ def make_image(cosmo,
     imageModel_ml = ImageModel(data_class, psf_class, lens_model_class, source_model_class, kwargs_numerics=kwargs_numerics)
     
     im_ml = imageModel_ml.image(kwargs_lens_list, kwargs_source)
-    
-    '''
-    # making this image to put the subhalos inside the ring 
-    hst_ml = HST(band='WFC3_F160W', psf_type='GAUSSIAN')
-    norbits_ml = hst_ml.kwargs_single_band() 
-    norbits_ml['pixel_scale'] = deltapix
-    norbits_ml['seeing'] = deltapix 
-    Hub_ml = SimAPI(numpix=numPix,
-                 kwargs_single_band=norbits_ml,
-                 kwargs_model=kwargs_model_mainlens
-                )
 
-    hb_ml = Hub_ml.image_model_class(kwargs_numerics = {'point_source_supersampling_factor': 1})
-    im_ml = hb_ml.image(kwargs_lens=kwargs_lens_list, kwargs_source=kwargs_source)
-    '''
     # determine valid pixels for subhalo positioning 
     pix_max = np.max(im_ml)
     x_options, y_options = x_grid[im_ml.flatten() > pix_scale*pix_max], y_grid[im_ml.flatten() > pix_scale*pix_max]
@@ -592,10 +625,50 @@ def make_image(cosmo,
         alpha_Rs = coreBurkert_mtoalpha(mass_burk, Rs_angle, Rs_angle, Si_crit, rho_c)
         
         vals = np.array([Rs_angle, alpha_Rs, Rs_angle, x, y]).T
+    
+    elif (subhalo_type == 'SPEMD'): 
+        if (msubs is None): 
+            msubs = m_unif(np.random.random(nsub), minmass, maxmass, beta=beta)
+                      
+        thetaes = epl_m2thetae(msubs, gamma, rho_c, Si_crit)
+        e1s, e2s = np.random.uniform(-0.2, 0.2, (2, nsub)) 
+        s_scales = np.random.uniform(0.1, 0.3, nsub)
+        
+        # subhalo parameter list
+        vals = np.array([thetaes, gamma, e1s, e2s, s_scales, x, y]).T
+    elif (subhalo_type == 'SPL_CORE'): 
+        if (msubs is None): 
+            msubs = m_unif(np.random.random(nsub), minmass, maxmass, beta=beta)
+            
+        r_cores = np.random.uniform(0.01, 0.05, nsub)
+        sigma0s = splcore_m2sigma0(msubs, gamma, rho_c, Si_crit, r_cores)
 
-    kwargs_subhalo_lens_list = []
-    for val in vals: 
-        kwargs_subhalo_lens_list.append(dict(zip(keys, val)))
+        vals = np.array([sigma0s, x, y, r_cores, gamma]).T 
+    elif (subhalo_type == 'TNFW'): 
+        if (msubs is None): 
+            mass_nfw = m_unif(np.random.random(nsub), minmass, maxmass, beta=beta)
+        else: 
+            mass_nfw = msubs
+            
+        if (concentration_factor == 0):
+            cs = 20*np.ones(len(mass_nfw)) 
+        else: 
+            cs = mass_to_concentration(mass_nfw, dex=dex, z=z_lens)*concentration_factor
+            
+        Rs_angle, alpha_Rs = lensCosmo.nfw_physical2angle(M=mass_nfw, c=cs)
+        r_pos = np.sqrt((x - kwargs_lens_main['center_x'])**2 + (y - kwargs_lens_main['center_y'])**2)
+        rs_trunc = SubhalosDG19.get_truncation_radius(mass_nfw, r_pos*mpc_per_arcsec_lens*1e3)/(1e3*mpc_per_arcsec_lens)
+        
+        # subhalo parameter list
+        vals = np.array([Rs_angle, alpha_Rs, rs_trunc, x, y]).T
+        
+        
+    if shargs is None: 
+        kwargs_subhalo_lens_list = []
+        for val in vals: 
+            kwargs_subhalo_lens_list.append(dict(zip(keys, val)))
+    else: 
+        kwargs_subhalo_lens_list = shargs 
             
 
     lensModel = LensModel(lens_model_list + [subhalo_type]*nsub)
@@ -671,32 +744,6 @@ def make_image(cosmo,
     if noise: 
         im += single_band.noise_for_model(im)
     
-    
-    '''
-    # make image with noise 
-    hst = HST(band='WFC3_F160W', psf_type='GAUSSIAN')
-    norbits = hst.kwargs_single_band()
-    norbits['pixel_scale'] = deltapix
-    norbits['seeing'] = deltapix
-    
-    if (noise): 
-        norbits['exposure_time'] = noise 
-    
-    Hub = SimAPI(numpix=numPix,
-                 kwargs_single_band=norbits,
-                 kwargs_model=kwargs_model
-                )
-    '''
-    '''    
-    hb_im = Hub.image_model_class(kwargs_numerics = {'point_source_supersampling_factor': 1})
-
-    im = hb_im.image(kwargs_lens=kwargs_lens_list + kwargs_subhalo_lens_list, kwargs_source=kwargs_source, kwargs_lens_light=kwargs_light_lens)
-    
-    # add noise 
-    if (noise): 
-        hubnoise = Hub.noise_for_model(im)
-        im = im + hubnoise
-    '''
     out_dict = {'kwargs_model': kwargs_model,
                 'kwargs_source': kwargs_source,
                 'kwargs_lens': kwargs_lens_list, 

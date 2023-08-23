@@ -3,11 +3,13 @@
 # sources.
 #############################################################
 
-
+import pickle 
 import numpy as np
 import time, sys, os
 import argparse
+from astropy.io import fits
 
+from lenstronomy.Util.kernel_util import degrade_kernel
 from astropy.cosmology import default_cosmology
 
 from scipy.stats import truncnorm
@@ -36,7 +38,7 @@ parser.add_argument("--gamma_widthperim", type=float, default=0, help='Width of 
 parser.add_argument("--gamma_test", type=float, default=None, help='gamma value for test set.') 
 parser.add_argument("--ming", type=float, default=1.5, help='Min gamma of training set.') 
 parser.add_argument("--maxg", type=float, default=2.5, help='Max gamma of training set.') 
-parser.add_argument('--resume', action='store_true', help='Whether prudction is resumed from halfway; if true, load_dir needs to be given.')
+parser.add_argument('--resume', action='store_true', help='Whether production is resumed from halfway; if true, load_dir needs to be given.')
 parser.add_argument('--data_type', default=None, help='Options include val, train, test.')
 parser.add_argument('--path', type=str, default='/n/holyscratch01/dvorkin_lab/gzhang/Storage/llr_data_images/', help='Path to save data.')
 parser.add_argument('--load_dir', type=str, default=None, help='Directory to load model from.')
@@ -49,6 +51,7 @@ parser.add_argument('--los', action='store_true', help='Whether to add los halos
 parser.add_argument('--shear', type=float, default=0, help='Bounds on adding shear.')
 parser.add_argument('--ml_type', type=str, default='SIE', help='Main lens type')
 parser.add_argument('--subhalo_type', type=str, default='EPL')
+parser.add_argument('--load_psf', action='store_true', help='Whether to load empirical PSF')
 
 args = parser.parse_args()
 
@@ -93,13 +96,13 @@ else:
     if args.label is not None: PATH_save = PATH + '{}_'.format(args.label) 
     else: PATH_save = PATH 
     
-    if (args.subhalo_type == 'EPL'): 
+    if (args.subhalo_type == 'EPL' or args.subhalo_type == 'SPEMD' or args.subhalo_type == 'SPL_CORE'): 
         if (args.gamma_test is None): 
             PATH_save = PATH_save + 'deltapix{}_numpix{}_{}sh_{}ml_logm{}to{}_beta{}_nsub{}to{}_{}maxpix_g{}to{}_gammaw{}_zl{}zs{}_shear{}'.format(args.deltapix, args.numpix, args.subhalo_type, args.ml_type, args.minlogmass, args.maxlogmass, args.beta, args.minnsub, args.maxnsub, args.pixscale, args.ming, args.maxg, args.gamma_widthperim, args.z_lens, args.z_source, args.shear)
         else: 
             PATH_save = PATH_save + 'deltapix{}_numpix{}_{}sh_{}ml_logm{}to{}_beta{}_nsub{}to{}_{}maxpix_gammaw{}_zl{}zs{}_shear{}'.format(args.deltapix, args.numpix, args.subhalo_type, args.ml_type, args.minlogmass, args.maxlogmass, args.beta, args.minnsub, args.maxnsub, args.pixscale, args.gamma_widthperim, args.z_lens, args.z_source, args.shear)
     
-    elif (args.subhalo_type == 'NFW'): 
+    elif (args.subhalo_type == 'NFW' or args.subhalo_type == 'TNFW'): 
         PATH_save = PATH_save + 'deltapix{}_numpix{}_{}sh_{}ml_logm{}to{}_beta{}_nsub{}to{}_{}maxpix_zl{}zs{}_shear{}'.format(args.deltapix, args.numpix, args.subhalo_type, args.ml_type, args.minlogmass, args.maxlogmass, args.beta, args.minnsub, args.maxnsub, args.pixscale, args.z_lens, args.z_source, args.shear)
         if (args.dex): PATH_save = PATH_save + '_dex{}'.format(args.dex)
 
@@ -109,6 +112,7 @@ else:
     if (args.lens_light): PATH_save = PATH_save + '_lenslight'
     if (args.multipole): PATH_save = PATH_save + '_multipole' 
     if (args.los): PATH_save = PATH_save + '_los'
+    if (args.load_psf): PATH_save = PATH_save + '_loadpsf'
     
     PATH_save = PATH_save + '/'
         
@@ -122,7 +126,7 @@ else:
     os.makedirs(PATH_modelargs, exist_ok=True)
     os.makedirs(PATH_sourceargs, exist_ok=True)
     
-    if (args.subhalo_type == 'EPL'): 
+    if (args.subhalo_type == 'EPL' or args.subhalo_type == 'SPEMD' or args.subhalo_type == 'SPL_CORE'): 
         # check if there is a gamma for test set 
         if (args.gamma_test is None):
             gammas = np.random.uniform(args.ming, args.maxg, size=n_total)
@@ -148,7 +152,7 @@ center_ys = np.random.uniform(-0.2, 0.2, size=n_total)
 if (args.ml_type == 'SIE'): 
     vals = np.array([thetas_ml, e1s, e2s, center_xs, center_ys]).T
 elif (args.ml_type == 'EPL'): 
-    ml_epl_loc, ml_epl_scale = 2, 0.1
+    ml_epl_loc, ml_epl_scale = 2, 0.2
     print('Main lens loc and scale: {}, {}'.format(ml_epl_loc, ml_epl_scale), flush=True)
     gammas_ml = truncnorm.rvs((1.1-ml_epl_loc)/ml_epl_scale, (2.9-ml_epl_loc)/ml_epl_scale, loc=ml_epl_loc, scale=ml_epl_scale, size=n_total)
     #gammas_ml = np.random.uniform(1.8, 2.2, size=n_total)
@@ -177,6 +181,18 @@ if (args.los):
     # convert thetaE to m200 for the los calculations
     m200s_lens = epl_m200(thetas_ml, gammas_ml, zs_lens, zs_source, cosmo)
 
+kwargs_psf = None 
+if (args.load_psf): 
+    #temp = fits.open('../data/F814W_2002-04-19_05_22_28.pca.fits')
+    #psf_emp = temp[0].data[17]
+    #psf_pix_map = degrade_kernel(psf_emp - np.min(psf_emp), 4)
+    #psf_pix_map = temp[0].data.reshape((31, 31))
+    psf_pix_map = np.load('../data/emp_psf.npy') 
+    
+    kwargs_psf = {'psf_type': 'PIXEL',  # type of PSF model (supports 'GAUSSIAN' and 'PIXEL')
+                  'kernel_point_source': psf_pix_map,
+                  'point_source_supersampling_factor':1
+                 }
     
 # check which type of dataset we are making 
 if (args.data_type == 'val'): 
@@ -258,11 +274,17 @@ for i in range(n_total):
         # los halo type matches subhalo type 
         if (args.subhalo_type == 'EPL'): 
             los = LOSDG19_epl(gammas[i], gammas[i]*args.gamma_widthperim, los_args, ml_args, source_parameters, {'cosmology_name': 'planck18'})
-            losargs = los.draw_los_epl(args.numpix, args.deltapix)
-        elif (args.subhalo_type == 'NFW'): 
+            losargs = los.draw_los_epl(args.numpix, args.deltapix, los_type=args.subhalo_type)
+        elif (args.subhalo_type == 'NFW' or args.subhalo_type == 'TNFW'): 
             los = LOSDG19_epl(None, None, los_args, ml_args, source_parameters, {'cosmology_name': 'planck18'})
             losargs = los.draw_los_nfw(args.numpix, args.deltapix, args.dex)
-    
+        elif (args.subhalo_type == 'SPEMD'):
+            los = LOSDG19_epl(gammas[i], gammas[i]*args.gamma_widthperim, los_args, ml_args, source_parameters, {'cosmology_name': 'planck18'})
+            losargs = los.draw_los_epl(args.numpix, args.deltapix, los_type=args.subhalo_type)
+        elif (args.subhalo_type == 'SPL_CORE'): 
+            los = LOSDG19_epl(gammas[i], gammas[i]*args.gamma_widthperim, los_args, ml_args, source_parameters, {'cosmology_name': 'planck18'})
+            losargs = los.draw_los_epl(args.numpix, args.deltapix, los_type=args.subhalo_type)
+            
     
     if (args.data_type == 'train'): 
         cc = COSMOSExcludeCatalog('planck18', source_parameters)
@@ -274,7 +296,7 @@ for i in range(n_total):
     # determine some parameters of subhalos first 
     nsub = nsubs[i]
     
-    if (args.subhalo_type == 'EPL'): 
+    if (args.subhalo_type == 'EPL' or args.subhalo_type == 'SPEMD' or args.subhalo_type == 'SPL_CORE'): 
         if (args.gamma_widthperim == 0):
             gamma = np.random.normal(loc=gammas[i], scale=gammas[i]*args.gamma_widthperim, size=nsub)
         else: 
@@ -284,16 +306,24 @@ for i in range(n_total):
         gamma = None 
     
     # make image 
-    dic = make_image(cosmo=cosmo, z_lens=zs_lens[i], z_source=zs_source[i], numPix=args.numpix, deltapix=args.deltapix, minmass=10**args.minlogmass, maxmass=10**args.maxlogmass, nsub=nsub, pix_scale=args.pixscale, gamma=gamma, lensargs=dict(zip(keys_ml, vals[i])), sourceargs=(source_model_list, kwargs_source), noise=args.noise, subhalo_type=args.subhalo_type, concentration_factor=args.c_factor, nms=args.nms, shear=args.shear, beta=args.beta, main_lens_type=args.ml_type, lens_light=args.lens_light, multipole=args.multipole, dex=args.dex, losargs=losargs)
+    dic = make_image(cosmo=cosmo, z_lens=zs_lens[i], z_source=zs_source[i], numPix=args.numpix, deltapix=args.deltapix, minmass=10**args.minlogmass, maxmass=10**args.maxlogmass, nsub=nsub, pix_scale=args.pixscale, gamma=gamma, lensargs=dict(zip(keys_ml, vals[i])), sourceargs=(source_model_list, kwargs_source), noise=args.noise, subhalo_type=args.subhalo_type, concentration_factor=args.c_factor, nms=args.nms, shear=args.shear, beta=args.beta, main_lens_type=args.ml_type, lens_light=args.lens_light, multipole=args.multipole, dex=args.dex, losargs=losargs, psf=kwargs_psf)
+    
+    running_sum += np.mean(dic['Image']) 
     
     np.save(PATH_saveim + 'SLimage_{}'.format(args.n_start + i + 1), dic['Image'])
     np.save(PATH_lensargs + 'lensarg_{}'.format(args.n_start + i + 1), dic['kwargs_lens'])
+    del dic['Image']
+    del dic['kwargs_lens']
+    
+    with open(PATH_modelargs + 'imargs_{}.pkl'.format(args.n_start + i + 1), 'wb') as f:
+        pickle.dump(dic, f)
+    
+    '''
     np.save(PATH_lensargs + 'lenslightarg_{}'.format(args.n_start + i + 1), dic['kwargs_lens_light'])
     np.save(PATH_lensargs + 'lensredshift_{}'.format(args.n_start + i + 1), dic['lens_redshifts'])
     np.save(PATH_modelargs + 'modelarg_{}'.format(args.n_start + i + 1), dic['kwargs_model'])
     np.save(PATH_sourceargs + 'sourcearg_{}'.format(args.n_start + i + 1), dic['kwargs_source'])
-    
-    running_sum += dic['Image']
+    '''
     
     if ((i+1) % 5000 == 0): 
         print('Image {} saved'.format(args.n_start + i + 1), flush=True)

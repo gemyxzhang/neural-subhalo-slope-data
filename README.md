@@ -1,4 +1,5 @@
 # neural-subhalo-slope-data
+[![arXiv](https://img.shields.io/badge/arXiv-2208.13796%20-green.svg)](https://arxiv.org/abs/2308.09739)
 
 ## Software dependencies
 The code uses standard `astropy`, `numpy`, `scipy` and `scikit-learn` packages. We use [paltas](https://github.com/swagnercarena/paltas) and [lenstronomy](https://github.com/lenstronomy/lenstronomy) for data generation. These can be installed as follows: 
@@ -6,7 +7,7 @@ The code uses standard `astropy`, `numpy`, `scipy` and `scikit-learn` packages. 
 ```
 pip install paltas lenstronomy 
 ```
-We ran our analysis with `Python 3.9.12` and `Pytorch 1.12.1`. 
+The `tqdm` package is needed for the progress bar display but can be commented out easily. We ran our analysis with `Python 3.9.12` and `Pytorch 1.12.1`. 
 
 ## Architecture 
 <p float="left">
@@ -29,7 +30,7 @@ To train a likelihood-ratio estimator on the mock images, run the following scri
 - [train_masked.py](train_masked.py) with the specified parameters (which has dependecy on [data_utils.py](data_utils.py))
 
 ### Inference 
-To obtain the likelihood ratios for estimating the calibration distributions, the following script will produce two sets of likelihood ratios that can be used for KDE: 
+If calibration is needed, to obtain the likelihood ratios for estimating the calibration distributions, the following script will produce two sets of likelihood ratios that can be used for KDE: 
 - [make_calibration_distributions.py](make_calibration_distributions.py) (which has dependecy on [inference_utils.py](inference_utils.py))
 
 The HST images used in our analysis are taken from 

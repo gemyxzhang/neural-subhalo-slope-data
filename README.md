@@ -1,4 +1,4 @@
-# neural-subhalo-slope-data
+# Subhalo effective density slope measurements from HST strong lensing data with neural likelihood-ratio estimation
 [![arXiv](https://img.shields.io/badge/arXiv-2208.13796%20-green.svg)](https://arxiv.org/abs/2308.09739)
 
 ## Software dependencies
